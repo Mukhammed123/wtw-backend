@@ -1,72 +1,110 @@
-from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from hashlib import sha256
-import hmac
-import time
+# main.py
+from fastapi import FastAPI, Request, Depends, HTTPException, Body, Query
+from sqlalchemy.orm import Session
+from database import get_db, User
+from sqlalchemy.exc import IntegrityError
 
 app = FastAPI()
 
-# Кросс-доменные запросы (CORS)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:8080"],  # Разрешаем запросы с фронтенда
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# Хранилище сессий (можно использовать что-то вроде Redis в будущем)
-sessions = {}
+@app.post("/users")
+async def auth(payload: dict = Body(...), db: Session = Depends(get_db)):
+    tg_data = payload
 
-# Функция проверки подлинности данных от Telegram
-def verify_telegram_auth(data: dict, bot_token: str):
-    check_hash = data.pop('hash')
-    data_check_string = "\n".join([f"{k}={v}" for k, v in sorted(data.items())])
-    secret_key = sha256(bot_token.encode()).digest()
-    hmac_hash = hmac.new(secret_key, data_check_string.encode(), sha256).hexdigest()
+    # Extract relevant user info
+    telegram_id = tg_data.get("id")
+    first_name = tg_data.get("first_name")
+    last_name = tg_data.get("last_name")
+    username = tg_data.get("username")
 
-    if not hmac.compare_digest(hmac_hash, check_hash):
-        raise HTTPException(status_code=403, detail="Invalid Telegram data")
+    # Save the user information to the database
+    new_user = User(
+        telegram_id=telegram_id,
+        first_name=first_name,
+        last_name=last_name,
+        username=username
+    )
 
-# Эндпоинт авторизации через Telegram
-@app.get("/auth")
-async def auth(request: Request):
-    data = dict(request.query_params)
-    bot_token = "7719047280:AAEQ4XHAJEnMLy94ubgPkCgnq3-I11J-fYk"
+    try:
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+    except IntegrityError:
+        db.rollback()
+        # Handle the case where the username already exists
+        return {"status": "error", "message": "Username already exists.", "user": None}
 
-    verify_telegram_auth(data, bot_token)
+    return {"status": "success", "user": {
+        "telegram_id": new_user.telegram_id,
+        "first_name": new_user.first_name,
+        "last_name": new_user.last_name,
+        "username": new_user.username,
+        "balance": new_user.balance
+    }}
 
-    # Сохраняем пользователя в сессии
-    user_id = data['id']
-    sessions[user_id] = {
-        'first_name': data['first_name'],
-        'balance': 1000,
-    }
 
-    return {"message": "Authorized", "user": sessions[user_id]}
+@app.get("/users")
+async def get_users(telegram_id: str = Query(None), db: Session = Depends(get_db)):
+    if telegram_id:
+        user = db.query(User).filter(User.telegram_id == telegram_id).first()
+        if user:
+            return {"status": "success", "user": {
+                "telegram_id": user.telegram_id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "username": user.username,
+                "balance": user.balance
+            }}
+        else:
+            raise HTTPException(status_code=404, detail="User not found")
+    else:
+        users = db.query(User).all()
+        return {
+            "status": "success",
+            "users": [
+                {
+                    "telegram_id": user.telegram_id,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "username": user.username,
+                    "balance": user.balance
+                } for user in users
+            ]
+        }
 
-# Эндпоинт для перевода средств
+
 @app.post("/transfer")
-async def transfer_funds(request: Request):
-    body = await request.json()
-    user_id = body.get("userId")
-    recipient_id = body.get("recipientId")
-    amount = body.get("amount")
+async def transfer(transfer_data: dict = Body(...), db: Session = Depends(get_db)):
+    sender_id = transfer_data.get("sender_id")
+    receiver_id = transfer_data.get("receiver_id")
+    amount = transfer_data.get("amount")
 
-    if not all([user_id, recipient_id, amount]):
-        raise HTTPException(status_code=400, detail="Missing fields")
+    # Validate the amount
+    if amount <= 0:
+        raise HTTPException(
+            status_code=400, detail="Amount must be greater than zero")
 
-    if user_id not in sessions:
+    # Fetch sender and receiver from the database
+    sender = db.query(User).filter(User.telegram_id == sender_id).first()
+    receiver = db.query(User).filter(User.telegram_id == receiver_id).first()
+
+    if not sender:
         raise HTTPException(status_code=404, detail="Sender not found")
 
-    if recipient_id not in sessions:
-        raise HTTPException(status_code=404, detail="Recipient not found")
+    if not receiver:
+        raise HTTPException(status_code=404, detail="Receiver not found")
 
-    if sessions[user_id]['balance'] < amount:
+    if sender.balance < amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    # Обновляем баланс отправителя и получателя
-    sessions[user_id]['balance'] -= amount
-    sessions[recipient_id]['balance'] += amount
+    # Perform the transfer
+    sender.balance -= amount
+    receiver.balance += amount
 
-    return {"message": "Transfer successful"}
+    db.commit()
 
+    return {
+        "status": "success",
+        "sender_balance": sender.balance,
+        "receiver_balance": receiver.balance
+    }
