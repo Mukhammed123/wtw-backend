@@ -5,10 +5,10 @@ from database import get_db, User
 from sqlalchemy.exc import IntegrityError
 from utils import get_users_response
 
-app = FastAPI()
+app = FastAPI(docs_url="/test/docs")
 
 
-@app.post("/users")
+@app.post("/test/users")
 async def auth(payload: dict = Body(...), db: Session = Depends(get_db)):
     tg_data = payload
 
@@ -35,7 +35,7 @@ async def auth(payload: dict = Body(...), db: Session = Depends(get_db)):
     return {"status": "success", "user": get_users_response(new_user)}
 
 
-@app.get("/users")
+@app.get("/test/users")
 async def get_users(telegram_id: str = Query(None), db: Session = Depends(get_db)):
     query = db.query(User)
 
@@ -52,7 +52,7 @@ async def get_users(telegram_id: str = Query(None), db: Session = Depends(get_db
     }
 
 
-@app.post("/transfer")
+@app.post("/test/transfer")
 async def transfer(transfer_data: dict = Body(...), db: Session = Depends(get_db)):
     sender_id = transfer_data.get("sender_id")
     receiver_id = transfer_data.get("receiver_id")
