@@ -5,7 +5,11 @@ from database import get_db, User
 from sqlalchemy.exc import IntegrityError
 from utils import get_users_response
 
-app = FastAPI(docs_url="/test/docs")
+app = FastAPI(
+    docs_url="/test/docs",
+    redoc_url="/test/redoc",
+    openapi_url="/test/openapi.json"
+)
 
 
 @app.post("/test/users")
